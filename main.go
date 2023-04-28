@@ -5,16 +5,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	_ "embed"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/mmcdole/gofeed/rss"
-	"gopkg.in/yaml.v3"
 )
 
 /*
@@ -27,25 +27,18 @@ of changes, the remote copy will overwrite the local copy
  the local copy up-to-date.
 */
 
-// FeedConfig contains the url, name and filepath of a given RSS feed
-type FeedConfig struct {
-	url  string
-	name string
-	path string
-}
-
-var (
-	opendataFeed = FeedConfig{
-		url:  "https://opendata.citywindsor.ca/RSS",
-		name: "Open Data",
-		path: "feeds/opendata.xml",
-	}
-)
-
 //go:embed star.citywindsor.ca
 var cert []byte
 
+var (
+	pathFlag string
+	urlFlag  string
+)
+
 func main() {
+	flag.StringVar(&pathFlag, "path", "./feeds/opendata.xml", "path to local xml file to diff")
+	flag.StringVar(&urlFlag, "url", "https://opendata.citywindsor.ca/RSS", "RSS feed url")
+	flag.Parse()
 	/*
 		Note that we need to add the ca-cert for "citywindsor.ca" to
 		to our HTTP client in order to access the data programatically
@@ -56,7 +49,7 @@ func main() {
 	}
 
 	// Get our Open Data update list
-	opendataUpdates, err := getFeedUpdates(client, &opendataFeed)
+	opendataUpdates, err := getFeedUpdates(client, pathFlag, urlFlag)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,72 +58,17 @@ func main() {
 	if len(opendataUpdates) == 0 {
 		log.Println("no changes found")
 	} else {
-		updates := make([]Update, 0)
-		for _, u := range opendataUpdates {
-			// only capture csv files for now
-			if strings.Contains(u.Link, ".csv") {
-				updates = append(updates, Update{
-					Name: u.Title,
-					Link: u.Link,
-					Date: u.PubDateParsed,
-				})
-			}
-		}
-		date := time.Now().Format(DateOnly)
-		summary := Post{
-			Title:   fmt.Sprintf("Open Data Weekly Summary - %s", date),
-			Date:    date,
-			Author:  "rss-bot",
-			Cover:   "",
-			Tags:    []string{"rss", "opendata", "automation"},
-			Updates: updates,
-		}
-
-		out, err := yaml.Marshal(summary)
+		b, err := json.MarshalIndent(opendataUpdates, "", "  ")
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(string(out))
+
+		fmt.Println(string(b))
 	}
 }
 
-const (
-	DateOnly = "2006-01-02"
-)
-
-type Update struct {
-	Name string     `yaml:"name"`
-	Link string     `yaml:"link"`
-	Date *time.Time `yaml:"date"`
-}
-
-type Post struct {
-	Title   string   `yaml:"title"`
-	Date    string   `yaml:"date"`
-	Author  string   `yaml:"author"`
-	Cover   string   `yaml:"cover"`
-	Tags    []string `yaml:"tags"`
-	Updates []Update `yaml:"updates"`
-}
-
-func parseAllUpdates(items []*rss.Item) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0)
-	for _, i := range items {
-		out = append(out, parseToUpdate(i))
-	}
-	return out
-}
-
-func parseToUpdate(item *rss.Item) map[string]interface{} {
-	return map[string]interface{}{
-		"title": item.Title,
-		"link":  item.Link,
-		"date":  *item.PubDateParsed,
-	}
-}
-
-func getFeedUpdates(client *http.Client, fc *FeedConfig) ([]*rss.Item, error) {
-	localFeed, err := fc.parseLocalFeed()
+func getFeedUpdates(client *http.Client, path, url string) ([]*rss.Item, error) {
+	localFeed, err := parseLocalFeed(path)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -151,7 +89,7 @@ func getFeedUpdates(client *http.Client, fc *FeedConfig) ([]*rss.Item, error) {
 	}
 
 	// Parse the remote copy of the opendata feed
-	remoteFeed, err := fc.parseRemoteFeed(client)
+	remoteFeed, err := parseRemoteFeed(client, path, url)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse remote feed: %v", err)
 	}
@@ -195,8 +133,8 @@ func newClientWithCA(cert []byte) (*http.Client, error) {
 	}, nil
 }
 
-func (fc *FeedConfig) parseRemoteFeed(c *http.Client) (*rss.Feed, error) {
-	resp, err := c.Get(fc.url)
+func parseRemoteFeed(c *http.Client, path, url string) (*rss.Feed, error) {
+	resp, err := c.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get remote feed: %v", err)
 	}
@@ -206,19 +144,19 @@ func (fc *FeedConfig) parseRemoteFeed(c *http.Client) (*rss.Feed, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := fc.write(data); err != nil {
+	if err := write(data, path); err != nil {
 		return nil, err
 	}
 
-	feed, err := fc.parseRSSFeed(bytes.NewBuffer(data))
+	feed, err := parseRSSFeed(bytes.NewBuffer(data))
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse remote feed: %v", err)
 	}
 	return feed, nil
 }
 
-func (fc *FeedConfig) parseLocalFeed() (*rss.Feed, error) {
-	b, err := os.ReadFile(fc.path)
+func parseLocalFeed(path string) (*rss.Feed, error) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &rss.Feed{}, nil
@@ -226,7 +164,7 @@ func (fc *FeedConfig) parseLocalFeed() (*rss.Feed, error) {
 		return nil, fmt.Errorf("unable to read local feed: %v", err)
 	}
 
-	feed, err := fc.parseRSSFeed(bytes.NewBuffer(b))
+	feed, err := parseRSSFeed(bytes.NewBuffer(b))
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse local feed: %v", err)
 	}
@@ -234,8 +172,8 @@ func (fc *FeedConfig) parseLocalFeed() (*rss.Feed, error) {
 	return feed, nil
 }
 
-func (fc *FeedConfig) write(b []byte) error {
-	f, err := os.Create(fc.path)
+func write(b []byte, path string) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -245,7 +183,7 @@ func (fc *FeedConfig) write(b []byte) error {
 	return nil
 }
 
-func (fc *FeedConfig) parseRSSFeed(r io.Reader) (*rss.Feed, error) {
+func parseRSSFeed(r io.Reader) (*rss.Feed, error) {
 	fp := rss.Parser{}
 
 	feed, err := fp.Parse(r)
