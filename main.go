@@ -56,21 +56,21 @@ func main() {
 
 	// exit if no changes found
 	if len(opendataUpdates) == 0 {
-		log.Println("no changes found")
+		log.Printf("no changes found")
 	} else {
 		b, err := json.MarshalIndent(opendataUpdates, "", "  ")
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		fmt.Println(string(b))
+		log.Printf("%s", b)
 	}
 }
 
 func getFeedUpdates(client *http.Client, path, url string) ([]*rss.Item, error) {
 	localFeed, err := parseLocalFeed(path)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	/*
@@ -99,7 +99,7 @@ func getFeedUpdates(client *http.Client, path, url string) ([]*rss.Item, error) 
 }
 
 func lookupUpdates(m map[string]time.Time, items []*rss.Item) ([]*rss.Item, error) {
-	out := make([]*rss.Item, 0)
+	updatedItems := make([]*rss.Item, 0)
 	for _, i := range items {
 		if date, ok := m[i.Title]; ok {
 			formatted := i.PubDateParsed.Format(time.RFC3339)
@@ -108,13 +108,13 @@ func lookupUpdates(m map[string]time.Time, items []*rss.Item) ([]*rss.Item, erro
 				return nil, err
 			}
 			if !rDate.Equal(date) {
-				out = append(out, i)
+				updatedItems = append(updatedItems, i)
 			}
 		} else {
-			out = append(out, i)
+			updatedItems = append(updatedItems, i)
 		}
 	}
-	return out, nil
+	return updatedItems, nil
 }
 
 // newClientWithCA reads a CA cert as bytes and returns an HTTP client with the appropriate cert pool
@@ -161,12 +161,12 @@ func parseLocalFeed(path string) (*rss.Feed, error) {
 		if os.IsNotExist(err) {
 			return &rss.Feed{}, nil
 		}
-		return nil, fmt.Errorf("unable to read local feed: %v", err)
+		return &rss.Feed{}, fmt.Errorf("unable to read local feed: %v", err)
 	}
 
 	feed, err := parseRSSFeed(bytes.NewBuffer(b))
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse local feed: %v", err)
+		return &rss.Feed{}, fmt.Errorf("unable to parse local feed: %v", err)
 	}
 
 	return feed, nil
