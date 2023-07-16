@@ -1,4 +1,4 @@
-# rss-feed-aggregator
+# rss-feed-aggregator - ARCHIVED
 
 This repository is part of my civic code efforts. For more infomation, feel free to check out dntiontk.github.io.
 
